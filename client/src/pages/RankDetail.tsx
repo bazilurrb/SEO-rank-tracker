@@ -2,7 +2,6 @@
 import { useState, useEffect, useRef } from "react";
 import { useParams, Link } from "react-router-dom";
 import { ArrowLeft, Target, Globe, Clock, TrendingUp, TrendingDown, Minus, RefreshCw, AlertCircle, ExternalLink, Trophy, Users, Calendar, Loader2 } from "lucide-react";
-import { dummyWebsiteRanking } from "../assets/assets";
 import { useApp } from "../context/AppContext";
 
 interface RankHistoryEntry {
@@ -40,6 +39,7 @@ interface TrackingData {
 
 export default function RankDetail() {
     const { api } = useApp();
+
     const { id } = useParams();
     const [tracking, setTracking] = useState<TrackingData | null>(null);
     const [loading, setLoading] = useState(true);
@@ -48,44 +48,41 @@ export default function RankDetail() {
     const chartRef = useRef<HTMLCanvasElement>(null);
 
     const fetchTracking = async () => {
-    try {
-        const res = await api.get(`/api/rank/${id}`);
-        if (res.data.success) {
-            setTracking(res.data.tracking);
-            
-            // If it's still checking in the background, poll again
-            if (res.data.tracking.status === "checking") {
-                setTimeout(fetchTracking, 3000);
-                setLoading(false); // Turn off loading for the initial background state
-                return;
+        try {
+            const res = await api.get(`/api/rank/${id}`);
+            if (res.data.success) {
+                if (res.data.tracking.status === "checking") {
+                    setTimeout(fetchTracking, 3000);
+                    setTracking(res.data.tracking);
+                    return;
+                }
+                setTracking(res.data.tracking);
             }
+        } catch {
+            // handled by null state
         }
-    } catch (error) {
-        console.error("Failed to fetch tracking details:", error);
-    } finally {
-        setLoading(false); // <-- THIS WAS MISSING. Turns off the spinner
-    }
-};
+        setLoading(false);
+    };
 
     const handleRefresh = async () => {
         if (!tracking) return;
         setRefreshing(true);
-        try{
-            await api.post(`/api/rank/${tracking._id}/refresh`)
-            setTracking((prev) => (prev ? { ...prev, status: "checking"}: null));
+        try {
+            await api.post(`/api/rank/${tracking._id}/refresh`);
+            setTracking((prev) => (prev ? { ...prev, status: "checking" } : null));
 
-            const pollInterval = setInterval(async ()=>{
-                try{
+            const pollInterval = setInterval(async () => {
+                try {
                     const check = await api.get(`/api/rank/${tracking._id}`);
-                    if(check.data.tracking.status !== "checking"){
+                    if (check.data.tracking.status !== "checking") {
                         clearInterval(pollInterval);
                         setTracking(check.data.tracking);
                         setRefreshing(false);
                     }
-                } catch(error:any){
-                    console.error(error)
+                } catch (error: any) {
+                    console.error(error);
                 }
-            }, 3000)
+            }, 3000);
         } catch {
             setRefreshing(false);
         }

@@ -1,27 +1,10 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { useState, useEffect, useRef } from "react";
-import { useParams, Link } from "react-router-dom";
-import { ArrowLeft, Target, Globe, Clock, TrendingUp, TrendingDown, Minus, RefreshCw, AlertCircle, ExternalLink, Trophy, Users, Calendar, Loader2 } from "lucide-react";
-import { dummyWebsiteRanking } from "../assets/assets";
+import { useState, useEffect } from "react";
+import { Link } from "react-router-dom";
+import { Target, Plus, RefreshCw, Trash2, TrendingUp, TrendingDown, Minus, ExternalLink, Clock, Loader2, X, Search, Globe, AlertCircle, Eye, EyeOff, Filter, ArrowUpDown } from "lucide-react";
 import { useApp } from "../context/AppContext";
 
-interface RankHistoryEntry {
-    date: string;
-    position: number | null;
-    page: number | null;
-    title: string;
-    snippet: string;
-}
-
-interface Competitor {
-    position: number;
-    url: string;
-    domain: string;
-    title: string;
-    snippet: string;
-}
-
-interface TrackingData {
+interface KeywordItem {
     _id: string;
     keyword: string;
     url: string;
@@ -30,491 +13,409 @@ interface TrackingData {
     currentPage: number | null;
     bestPosition: number | null;
     positionChange: number;
-    rankHistory: RankHistoryEntry[];
-    competitors: Competitor[];
     active: boolean;
     lastChecked: string | null;
     status: string;
-    createdAt: string;
+    competitors: { position: number; url: string; domain: string; title: string; snippet: string }[];
 }
 
-export default function RankDetail() {
+export default function RankTracker() {
     const { api } = useApp();
-    const { id } = useParams();
-    const [tracking, setTracking] = useState<TrackingData | null>(null);
+
+    const [keywords, setKeywords] = useState<KeywordItem[]>([]);
     const [loading, setLoading] = useState(true);
-    const [refreshing, setRefreshing] = useState(false);
-    const [activeTab, setActiveTab] = useState("overview");
-    const chartRef = useRef<HTMLCanvasElement>(null);
+    const [showAddModal, setShowAddModal] = useState(false);
+    const [newKeyword, setNewKeyword] = useState("");
+    const [newUrl, setNewUrl] = useState("");
+    const [adding, setAdding] = useState(false);
+    const [addError, setAddError] = useState("");
+    const [refreshing, setRefreshing] = useState<string | null>(null);
+    const [deleting, setDeleting] = useState<string | null>(null);
+    const [searchQuery, setSearchQuery] = useState("");
+    const [statusFilter, setStatusFilter] = useState("all");
+    const [sortBy, setSortBy] = useState("newest");
 
-    const fetchTracking = async () => {
-        try{
-            const res= await api.get(`/api/rank/${id}`)
-            if (res.data.success){
-                if(res.data.tracking.status === "checking"){
-                    setTimeout(fetchTracking, 3000)
-                    setTracking(res.data.tracking);
-                    return;
-                }
-                setTracking(res.data.tracking);
+    const fetchKeywords = async () => {
+        try {
+            const res = await api.get("/api/rank/list");
+            if (res.data.success) {
+                setKeywords(res.data.keywords);
             }
-        } catch{
-            // Handled by null this.state.first
+        } catch (err) {
+            console.error("Failed to fetch keywords:", err);
         }
+        setLoading(false);
     };
 
-    const handleRefresh = async () => {
-        if (!tracking) return;
-        setRefreshing(true);
-        try{
-            await api.post(`/api/rank/${tracking._id}/refresh`)
-            setTracking((prev) => (prev ? { ...prev, status: "checking"}: null));
+    const handleAdd = async (e: React.SubmitEvent) => {
+        e.preventDefault();
+        if (!newKeyword.trim() || !newUrl.trim()) return;
 
-            const pollInterval = setInterval(async ()=>{
-                try{
-                    const check = await api.get(`/api/rank/${tracking._id}`);
-                    if(check.data.tracking.status !== "checking"){
-                        clearInterval(pollInterval);
-                        setTracking(check.data.tracking);
-                        setRefreshing(false);
+        setAdding(true);
+        setAddError("");
+        try {
+            const res = await api.post("/api/rank/add", {
+                keyword: newKeyword.trim(),
+                url: newUrl.trim(),
+            });
+            if (res.data.success) {
+                setKeywords((prev) => [res.data.tracking, ...prev]);
+                setNewKeyword("");
+                setNewUrl("");
+                setShowAddModal(false);
+
+                // Poll for completion
+                const id = res.data.tracking._id;
+                const pollInterval = setInterval(async () => {
+                    try {
+                        const check = await api.get(`/api/rank/${id}`);
+                        if (check.data.tracking.status !== "checking") {
+                            clearInterval(pollInterval);
+                            setKeywords((prev) => prev.map((k) => (k._id === id ? check.data.tracking : k)));
+                        }
+                    } catch (error: any) {
+                        console.error(error);
                     }
-                } catch(error:any){
-                    console.error(error)
+                }, 3000);
+            }
+        } catch (err: any) {
+            setAddError(err.response?.data?.message || "Failed to add keyword");
+        }
+        setAdding(false);
+    };
+
+    const handleRefresh = async (id: string) => {
+        setRefreshing(id);
+        try {
+            await api.post(`/api/rank/${id}/refresh`);
+            // Update status to checking
+            setKeywords((prev) => prev.map((k) => (k._id === id ? { ...k, status: "checking" } : k)));
+
+            // Poll for completion
+            const pollInterval = setInterval(async () => {
+                try {
+                    const check = await api.get(`/api/rank/${id}`);
+                    if (check.data.tracking.status !== "checking") {
+                        clearInterval(pollInterval);
+                        setKeywords((prev) => prev.map((k) => (k._id === id ? check.data.tracking : k)));
+                        setRefreshing(null);
+                    }
+                } catch (error: any) {
+                    console.error(error);
                 }
-            }, 3000)
-        } catch {
-            setRefreshing(false);
+            }, 3000);
+        } catch (err) {
+            console.error("Refresh failed:", err);
+            setRefreshing(null);
         }
     };
 
-    const drawChart = () => {
-        const canvas = chartRef.current;
-        if (!canvas || !tracking) return;
-
-        const ctx = canvas.getContext("2d");
-        if (!ctx) return;
-
-        const history = tracking.rankHistory.filter((h) => h.position !== null).sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-
-        if (history.length === 0) return;
-
-        // High DPI support
-        const dpr = window.devicePixelRatio || 1;
-        const rect = canvas.getBoundingClientRect();
-        canvas.width = rect.width * dpr;
-        canvas.height = rect.height * dpr;
-        ctx.scale(dpr, dpr);
-
-        const w = rect.width;
-        const h = rect.height;
-        const padding = { top: 30, right: 30, bottom: 50, left: 50 };
-        const chartW = w - padding.left - padding.right;
-        const chartH = h - padding.top - padding.bottom;
-
-        // Clear
-        ctx.clearRect(0, 0, w, h);
-
-        // Find range (invert: position 1 = top)
-        const positions = history.map((h) => h.position!);
-        const minPos = Math.max(1, Math.min(...positions) - 2);
-        const maxPos = Math.max(...positions) + 2;
-
-        // Dynamic colors from theme
-        const styles = getComputedStyle(document.documentElement);
-        const borderColor = styles.getPropertyValue("--border").trim() || "rgba(128,128,128,0.2)";
-        const primaryColor = styles.getPropertyValue("--accent").trim() || "#3b82f6";
-        const textColor = styles.getPropertyValue("--muted-foreground").trim() || "rgba(128,128,128,0.5)";
-        const bgColor = styles.getPropertyValue("--background").trim() || "#ffffff";
-
-        // Draw grid
-        ctx.strokeStyle = borderColor;
-        ctx.lineWidth = 1;
-        const gridLines = 5;
-        for (let i = 0; i <= gridLines; i++) {
-            const y = padding.top + (chartH / gridLines) * i;
-            ctx.beginPath();
-            ctx.moveTo(padding.left, y);
-            ctx.lineTo(w - padding.right, y);
-            ctx.stroke();
-
-            // Labels (inverted: top = lowest position number)
-            const posVal = Math.round(minPos + ((maxPos - minPos) / gridLines) * i);
-            ctx.fillStyle = textColor;
-            ctx.font = "11px Outfit";
-            ctx.textAlign = "right";
-            ctx.fillText(`#${posVal}`, padding.left - 8, y + 4);
+    const handleDelete = async (id: string) => {
+        if (!confirm("Delete this keyword tracking?")) return;
+        setDeleting(id);
+        try {
+            await api.delete(`/api/rank/${id}`);
+            setKeywords((prev) => prev.filter((k) => k._id !== id));
+        } catch (err) {
+            console.error("Delete failed:", err);
         }
+        setDeleting(null);
+    };
 
-        // Draw date labels
-        ctx.fillStyle = textColor;
-        ctx.font = "10px Outfit";
-        ctx.textAlign = "center";
-        const maxLabels = Math.min(history.length, 7);
-        const labelStep = Math.max(1, Math.floor(history.length / maxLabels));
-        for (let i = 0; i < history.length; i += labelStep) {
-            const x = padding.left + (chartW / Math.max(history.length - 1, 1)) * i;
-            const date = new Date(history[i].date);
-            ctx.fillText(`${date.getMonth() + 1}/${date.getDate()}`, x, h - padding.bottom + 20);
+    const handleToggle = async (id: string) => {
+        try {
+            const res = await api.put(`/api/rank/${id}/toggle`);
+            if (res.data.success) {
+                setKeywords((prev) => prev.map((k) => (k._id === id ? { ...k, active: res.data.tracking.active } : k)));
+            }
+        } catch (err) {
+            console.error("Toggle failed:", err);
         }
+    };
 
-        // Draw line
-        ctx.beginPath();
-        ctx.strokeStyle = primaryColor;
-        ctx.lineWidth = 2.5;
-        ctx.lineJoin = "round";
-        ctx.lineCap = "round";
-
-        history.forEach((entry, i) => {
-            const x = padding.left + (chartW / Math.max(history.length - 1, 1)) * i;
-            const yNorm = (entry.position! - minPos) / (maxPos - minPos);
-            const y = padding.top + yNorm * chartH;
-
-            if (i === 0) ctx.moveTo(x, y);
-            else ctx.lineTo(x, y);
-        });
-        ctx.stroke();
-
-        // Draw gradient fill
-        const gradient = ctx.createLinearGradient(0, padding.top, 0, h - padding.bottom);
-        // Using accent rgb roughly (59, 130, 246)
-        gradient.addColorStop(0, "rgba(59, 130, 246, 0.15)");
-        gradient.addColorStop(1, "rgba(59, 130, 246, 0)");
-
-        ctx.beginPath();
-        history.forEach((entry, i) => {
-            const x = padding.left + (chartW / Math.max(history.length - 1, 1)) * i;
-            const yNorm = (entry.position! - minPos) / (maxPos - minPos);
-            const y = padding.top + yNorm * chartH;
-            if (i === 0) ctx.moveTo(x, y);
-            else ctx.lineTo(x, y);
-        });
-        ctx.lineTo(padding.left + chartW, h - padding.bottom);
-        ctx.lineTo(padding.left, h - padding.bottom);
-        ctx.closePath();
-        ctx.fillStyle = gradient;
-        ctx.fill();
-
-        // Draw dots
-        history.forEach((entry, i) => {
-            const x = padding.left + (chartW / Math.max(history.length - 1, 1)) * i;
-            const yNorm = (entry.position! - minPos) / (maxPos - minPos);
-            const y = padding.top + yNorm * chartH;
-
-            ctx.beginPath();
-            ctx.arc(x, y, 4, 0, Math.PI * 2);
-            ctx.fillStyle = primaryColor;
-            ctx.fill();
-            ctx.beginPath();
-            ctx.arc(x, y, 2, 0, Math.PI * 2);
-            ctx.fillStyle = bgColor;
-            ctx.fill();
-        });
-
-        // Y-axis label
-        ctx.save();
-        ctx.translate(12, h / 2);
-        ctx.rotate(-Math.PI / 2);
-        ctx.fillStyle = textColor;
-        ctx.font = "11px Outfit";
-        ctx.textAlign = "center";
-        ctx.fillText("Position", 0, 0);
-        ctx.restore();
+    const getPositionBadge = (pos: number | null) => {
+        if (pos === null) return { text: "Not Ranked", class: "text-muted-foreground bg-muted/50" };
+        if (pos <= 3) return { text: `#${pos}`, class: "text-emerald-400 bg-emerald-500/15 border border-emerald-500/30" };
+        if (pos <= 10) return { text: `#${pos}`, class: "text-primary bg-primary/15 border border-primary/30" };
+        if (pos <= 20) return { text: `#${pos}`, class: "text-accent bg-accent/15 border border-accent/30" };
+        return { text: `#${pos}`, class: "text-danger bg-danger/15 border border-danger/30" };
     };
 
     const getChangeIndicator = (change: number) => {
-        if (change > 0) return { icon: <TrendingUp size={16} />, text: `+${change}`, class: "text-emerald-500" };
-        if (change < 0) return { icon: <TrendingDown size={16} />, text: `${change}`, class: "text-danger" };
-        return { icon: <Minus size={16} />, text: "—", class: "text-muted-foreground" };
+        if (change > 0) return { icon: <TrendingUp size={14} />, text: `+${change}`, class: "text-emerald-500" };
+        if (change < 0) return { icon: <TrendingDown size={14} />, text: `${change}`, class: "text-danger" };
+        return { icon: <Minus size={14} />, text: "0", class: "text-muted-foreground" };
     };
 
-    const getPositionColor = (pos: number | null) => {
-        if (pos === null) return "text-muted-foreground";
-        if (pos <= 3) return "text-emerald-500";
-        if (pos <= 10) return "text-primary";
-        if (pos <= 20) return "text-accent";
-        return "text-danger";
-    };
+    let processedData = [...keywords];
 
-    useEffect(() => {
-        (async () => await fetchTracking())();
-    }, [id]);
+    if (searchQuery) {
+        processedData = processedData.filter((k) => k.keyword.toLowerCase().includes(searchQuery.toLowerCase()) || k.domain.toLowerCase().includes(searchQuery.toLowerCase()));
+    }
 
-    useEffect(() => {
-        if (tracking && tracking.rankHistory.length > 0 && chartRef.current) {
-            drawChart();
+    if (statusFilter !== "all") {
+        if (statusFilter === "active") {
+            processedData = processedData.filter((k) => k.active === true);
+        } else if (statusFilter === "paused") {
+            processedData = processedData.filter((k) => k.active === false);
         }
-    }, [tracking, activeTab]);
-
-    if (loading) {
-        return (
-            <div className="min-h-screen bg-background flex items-center justify-center">
-                <div className="size-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
-            </div>
-        );
     }
 
-    if (!tracking) {
-        return (
-            <div className="min-h-screen bg-background flex items-center justify-center">
-                <div className="text-center glass-strong rounded-2xl p-10">
-                    <AlertCircle size={48} className="mx-auto text-danger mb-4" />
-                    <h2 className="text-xl font-bold text-foreground mb-2">Tracking Not Found</h2>
-                    <Link to="/rank-tracker" className="bg-primary px-5 py-2.5 rounded-xl text-sm font-semibold text-primary-foreground mt-4 inline-block" style={{ color: "var(--background)" }}>
-                        Back to Rank Tracker
-                    </Link>
-                </div>
-            </div>
-        );
-    }
+    processedData.sort((a: any, b: any) => {
+        if (sortBy === "newest") {
+            return new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime();
+        } else if (sortBy === "rank_asc") {
+            return (a.currentPosition || 999) - (b.currentPosition || 999);
+        } else if (sortBy === "rank_desc") {
+            return (b.currentPosition || 0) - (a.currentPosition || 0);
+        } else if (sortBy === "change") {
+            return (b.positionChange || 0) - (a.positionChange || 0);
+        }
+        return 0;
+    });
 
-    const change = getChangeIndicator(tracking.positionChange);
-    const tabs = [
-        { id: "overview", label: "Overview" },
-        { id: "competitors", label: `Competitors (${tracking.competitors.length})` },
-        { id: "history", label: "History" },
-    ];
+    useEffect(() => {
+        (async () => await fetchKeywords())();
+    }, []);
 
     return (
-        <div className="min-h-screen pt-16 md:pt-24 bg-background">
+        <div className="min-h-scree pt-16 md:pt-24 bg-background">
             <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8">
-                {/* Back + Header */}
-                <div className="mb-8">
-                    <Link to="/rank-tracker" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground mb-4 transition-colors">
-                        <ArrowLeft size={16} />
-                        Back to Rank Tracker
-                    </Link>
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                        <div>
-                            <h1 className="text-2xl sm:text-3xl font-medium text-foreground">
-                                "<span className="gradient-text">{tracking.keyword}</span>"
-                            </h1>
-                            <div className="flex items-center gap-2 mt-1 text-sm text-muted-foreground">
-                                <Globe size={14} />
-                                <span>{tracking.domain}</span>
-                                <a href={tracking.url} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline flex items-center gap-1">
-                                    Visit <ExternalLink size={12} />
-                                </a>
-                            </div>
+                {/* Header */}
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8">
+                    <div>
+                        <h1 className="text-2xl sm:text-3xl font-medium text-foreground">
+                            <span className="gradient-text">Rank Tracker</span>
+                        </h1>
+                        <p className="text-muted-foreground text-sm mt-1">Track your keyword rankings on Google — updated daily.</p>
+                    </div>
+                    <button onClick={() => setShowAddModal(true)} className="bg-primary px-5 py-2.5 rounded-xl text-sm font-semibold text-primary-foreground hover:opacity-90 transition-opacity flex items-center gap-2 self-start" id="add-keyword-btn" style={{ color: "var(--background)" }}>
+                        <Plus size={18} />
+                        Track Keyword
+                    </button>
+                </div>
+
+                {/* Filters Row */}
+                <div className="mb-6 flex flex-col md:flex-row gap-3" style={{ animationDelay: "100ms" }}>
+                    <div className="glass rounded-xl px-4 py-2.5 flex items-center gap-2 flex-1">
+                        <Search size={18} className="text-muted-foreground" />
+                        <input type="text" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} placeholder="Search keywords or domains..." className="bg-transparent text-sm text-foreground placeholder-muted-foreground outline-none flex-1" id="rank-search-input" />
+                    </div>
+
+                    <div className="flex gap-3">
+                        <div className="glass rounded-xl px-4 py-2.5 flex items-center gap-2">
+                            <Filter size={16} className="text-muted-foreground" />
+                            <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="bg-transparent text-sm text-foreground outline-none appearance-none pr-4 cursor-pointer">
+                                <option value="all" className="bg-background">
+                                    All Status
+                                </option>
+                                <option value="active" className="bg-background">
+                                    Active
+                                </option>
+                                <option value="paused" className="bg-background">
+                                    Paused
+                                </option>
+                            </select>
                         </div>
-                        <button onClick={handleRefresh} disabled={refreshing || tracking.status === "checking"} className="glass px-4 py-2.5 rounded-xl text-sm font-medium flex items-center gap-2 hover:bg-muted/50 transition-all disabled:opacity-50 self-start text-foreground">
-                            <RefreshCw size={16} className={refreshing ? "animate-spin" : ""} />
-                            Refresh Now
+                        <div className="glass rounded-xl px-4 py-2.5 flex items-center gap-2">
+                            <ArrowUpDown size={16} className="text-muted-foreground" />
+                            <select value={sortBy} onChange={(e) => setSortBy(e.target.value)} className="bg-transparent text-sm text-foreground outline-none appearance-none pr-4 cursor-pointer">
+                                <option value="newest" className="bg-background">
+                                    Newest First
+                                </option>
+                                <option value="rank_asc" className="bg-background">
+                                    Highest Ranked
+                                </option>
+                                <option value="rank_desc" className="bg-background">
+                                    Lowest Ranked
+                                </option>
+                                <option value="change" className="bg-background">
+                                    Biggest Gain
+                                </option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                {/* Keywords List */}
+                {loading ? (
+                    <div className="flex items-center justify-center py-30">
+                        <div className="size-7 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+                    </div>
+                ) : processedData.length === 0 ? (
+                    <div className="glass rounded-2xl p-12 text-center">
+                        <Target size={48} className="mx-auto text-muted-foreground mb-4 opacity-50" />
+                        <h3 className="text-lg font-semibold text-foreground mb-2">No keywords tracked yet</h3>
+                        <p className="text-sm text-muted-foreground mb-6">Add your first keyword and URL to start tracking your Google rankings.</p>
+                        <button onClick={() => setShowAddModal(true)} className="bg-primary px-5 py-2.5 rounded-xl text-sm font-semibold text-primary-foreground hover:opacity-90 transition-opacity" style={{ color: "var(--background)" }}>
+                            Track Your First Keyword
                         </button>
                     </div>
-                </div>
+                ) : (
+                    <div className="space-y-3" style={{ animationDelay: "200ms" }}>
+                        {processedData.map((kw) => {
+                            const posBadge = getPositionBadge(kw.currentPosition);
+                            const change = getChangeIndicator(kw.positionChange);
 
-                {/* Score Hero */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6" style={{ animationDelay: "100ms" }}>
-                    <div className="glass-strong rounded-2xl p-6 text-center">
-                        <p className="text-xs text-muted-foreground mb-2 flex items-center justify-center gap-1">
-                            <Target size={14} />
-                            Current Position
-                        </p>
-                        {tracking.status === "checking" ? <Loader2 size={32} className="animate-spin mx-auto text-primary" /> : <p className={`text-4xl font-bold ${getPositionColor(tracking.currentPosition)}`}>{tracking.currentPosition ? `#${tracking.currentPosition}` : "Not Ranked"}</p>}
-                        {tracking.currentPage && <p className="text-xs text-muted-foreground mt-1">Page {tracking.currentPage}</p>}
-                    </div>
-
-                    <div className="glass rounded-2xl p-6 text-center">
-                        <p className="text-xs text-muted-foreground mb-2 flex items-center justify-center gap-1">
-                            <TrendingUp size={14} />
-                            Position Change
-                        </p>
-                        <div className={`text-3xl font-bold flex items-center justify-center gap-2 ${change.class}`}>
-                            {change.icon}
-                            {change.text}
-                        </div>
-                        <p className="text-xs text-muted-foreground mt-1">since last check</p>
-                    </div>
-
-                    <div className="glass rounded-2xl p-6 text-center">
-                        <p className="text-xs text-muted-foreground mb-2 flex items-center justify-center gap-1">
-                            <Trophy size={14} />
-                            Best Position
-                        </p>
-                        <p className={`text-3xl font-bold ${getPositionColor(tracking.bestPosition)}`}>{tracking.bestPosition ? `#${tracking.bestPosition}` : "—"}</p>
-                        <p className="text-xs text-muted-foreground mt-1">all time</p>
-                    </div>
-
-                    <div className="glass rounded-2xl p-6 text-center">
-                        <p className="text-xs text-muted-foreground mb-2 flex items-center justify-center gap-1">
-                            <Calendar size={14} />
-                            Data Points
-                        </p>
-                        <p className="text-3xl font-bold text-accent">{tracking.rankHistory.length}</p>
-                        <p className="text-xs text-muted-foreground mt-1">{tracking.lastChecked ? `Last: ${new Date(tracking.lastChecked).toLocaleDateString()}` : "Never checked"}</p>
-                    </div>
-                </div>
-
-                {/* Tabs */}
-                <div className="flex gap-1 mb-6 overflow-x-auto pb-1" style={{ animationDelay: "200ms" }}>
-                    {tabs.map((tab) => (
-                        <button
-                            key={tab.id}
-                            onClick={() => setActiveTab(tab.id)}
-                            className={`px-5 py-2.5 rounded-xl text-sm font-medium transition-all whitespace-nowrap ${activeTab === tab.id ? "bg-primary text-primary-foreground" : "glass text-muted-foreground hover:text-foreground hover:bg-muted/50"}`}
-                            style={activeTab === tab.id ? { color: "var(--background)" } : {}}
-                        >
-                            {tab.label}
-                        </button>
-                    ))}
-                </div>
-
-                {/* Tab Content */}
-                <div key={activeTab}>
-                    {activeTab === "overview" && (
-                        <div className="space-y-6">
-                            {/* Ranking Chart */}
-                            <div className="glass rounded-2xl p-6">
-                                <h3 className="text-lg font-semibold text-foreground mb-4 flex items-center gap-2">
-                                    <TrendingUp size={20} className="text-primary" />
-                                    Ranking History
-                                </h3>
-                                {tracking.rankHistory.filter((h) => h.position !== null).length > 0 ? (
-                                    <div className="relative" style={{ height: "300px" }}>
-                                        <canvas ref={chartRef} style={{ width: "100%", height: "100%" }} className="rounded-xl" />
-                                    </div>
-                                ) : (
-                                    <div className="text-center py-12 text-muted-foreground">
-                                        <Calendar size={32} className="mx-auto mb-2 opacity-50" />
-                                        <p className="text-sm">No ranking data yet. Check back after the daily tracking runs.</p>
-                                    </div>
-                                )}
-                                <p className="text-xs text-muted-foreground mt-3 text-center">↑ Lower position number = higher rank. Updated daily at 6:00 AM UTC.</p>
-                            </div>
-
-                            {/* Top 3 Competitors Preview */}
-                            {tracking.competitors.length > 0 && (
-                                <div className="glass rounded-2xl p-6">
-                                    <div className="flex items-center justify-between mb-4">
-                                        <h3 className="text-lg font-semibold text-foreground flex items-center gap-2">
-                                            <Users size={20} className="text-accent" />
-                                            Top Competitors
-                                        </h3>
-                                        <button onClick={() => setActiveTab("competitors")} className="text-sm text-primary hover:underline">
-                                            View All →
-                                        </button>
-                                    </div>
-                                    <div className="space-y-2">
-                                        {tracking.competitors.slice(0, 3).map((comp, i) => (
-                                            <div key={i} className="glass rounded-xl p-4 flex items-start gap-4">
-                                                <div
-                                                    className={`w-8 h-8 rounded-lg flex items-center justify-center text-sm font-bold shrink-0 ${
-                                                        i === 0 ? "bg-amber-500/15 text-amber-400 border border-amber-500/30" : i === 1 ? "bg-gray-400/15 text-gray-300 border border-gray-400/30" : "bg-orange-500/15 text-orange-400 border border-orange-500/30"
-                                                    }`}
-                                                >
-                                                    #{comp.position}
+                            return (
+                                <div key={kw._id} className={`glass rounded-xl p-5 hover:bg-muted/50 transition-all ${!kw.active ? "opacity-50" : ""}`}>
+                                    <div className="flex flex-col lg:flex-row lg:items-center gap-4">
+                                        {/* Rank badge */}
+                                        <div className="flex items-center gap-4 lg:w-32 shrink-0">
+                                            {kw.status === "checking" ? (
+                                                <div className="w-16 h-16 rounded-xl glass flex items-center justify-center">
+                                                    <Loader2 size={24} className="text-primary animate-spin" />
                                                 </div>
-                                                <div className="flex-1 min-w-0">
-                                                    <p className="text-sm font-medium text-foreground truncate">{comp.title || comp.domain}</p>
-                                                    <p className="text-xs text-muted-foreground truncate">{comp.domain}</p>
-                                                </div>
-                                                <a href={comp.url} target="_blank" rel="noopener noreferrer" className="text-muted-foreground hover:text-primary shrink-0 transition-colors">
-                                                    <ExternalLink size={14} />
-                                                </a>
-                                            </div>
-                                        ))}
-                                    </div>
-                                </div>
-                            )}
-                        </div>
-                    )}
-
-                    {activeTab === "competitors" && (
-                        <div className="glass rounded-2xl p-6">
-                            <h3 className="text-lg font-semibold text-foreground mb-4 flex items-center gap-2">
-                                <Users size={20} className="text-accent" />
-                                Competitors for "{tracking.keyword}"
-                            </h3>
-                            {tracking.competitors.length > 0 ? (
-                                <div className="space-y-3">
-                                    {tracking.competitors.map((comp, i) => (
-                                        <div key={i} className="glass rounded-xl p-4 hover:bg-muted/50 transition-all">
-                                            <div className="flex items-start gap-4">
-                                                <div
-                                                    className={`w-10 h-10 rounded-xl flex items-center justify-center text-sm font-bold shrink-0 ${
-                                                        comp.position <= 3 ? "bg-emerald-500/15 text-emerald-400 border border-emerald-500/30" : comp.position <= 10 ? "bg-primary/15 text-primary border border-primary/30" : "bg-accent/15 text-accent border border-accent/30"
-                                                    }`}
-                                                >
-                                                    #{comp.position}
-                                                </div>
-                                                <div className="flex-1 min-w-0">
-                                                    <p className="text-sm font-medium text-foreground">{comp.title || "Untitled"}</p>
-                                                    <p className="text-xs text-primary mt-0.5">{comp.domain}</p>
-                                                    {comp.snippet && <p className="text-xs text-muted-foreground mt-1.5 line-clamp-2">{comp.snippet}</p>}
-                                                </div>
-                                                <a href={comp.url} target="_blank" rel="noopener noreferrer" className="p-2 rounded-lg hover:bg-muted text-muted-foreground hover:text-primary transition-all shrink-0">
-                                                    <ExternalLink size={16} />
-                                                </a>
-                                            </div>
-                                        </div>
-                                    ))}
-                                </div>
-                            ) : (
-                                <div className="text-center py-12 text-muted-foreground">
-                                    <Users size={32} className="mx-auto mb-2 opacity-50" />
-                                    <p className="text-sm">No competitor data available yet.</p>
-                                </div>
-                            )}
-                        </div>
-                    )}
-
-                    {activeTab === "history" && (
-                        <div className="glass rounded-2xl p-6">
-                            <h3 className="text-lg font-semibold text-foreground mb-4 flex items-center gap-2">
-                                <Clock size={20} className="text-accent" />
-                                Ranking History
-                            </h3>
-                            {tracking.rankHistory.length > 0 ? (
-                                <div className="space-y-2">
-                                    {[...tracking.rankHistory]
-                                        .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
-                                        .map((entry, i) => (
-                                            <div key={i} className="glass rounded-xl p-4 flex items-center gap-4 hover:bg-muted/50 transition-all">
-                                                <div
-                                                    className={`w-12 h-12 rounded-xl flex items-center justify-center text-sm font-bold shrink-0 ${
-                                                        entry.position === null
-                                                            ? "bg-muted text-muted-foreground border border-border"
-                                                            : entry.position <= 3
-                                                              ? "bg-emerald-500/15 text-emerald-400 border border-emerald-500/30"
-                                                              : entry.position <= 10
-                                                                ? "bg-primary/15 text-primary border border-primary/30"
-                                                                : entry.position <= 20
-                                                                  ? "bg-accent/15 text-accent border border-accent/30"
-                                                                  : "bg-danger/15 text-danger border border-danger/30"
-                                                    }`}
-                                                >
-                                                    {entry.position ? `#${entry.position}` : "—"}
-                                                </div>
-                                                <div className="flex-1 min-w-0">
-                                                    <p className="text-sm font-medium text-foreground">
-                                                        {new Date(entry.date).toLocaleDateString("en-US", {
-                                                            weekday: "short",
-                                                            year: "numeric",
-                                                            month: "short",
-                                                            day: "numeric",
-                                                        })}
-                                                    </p>
-                                                    <div className="flex items-center gap-3 mt-0.5">
-                                                        {entry.page && <span className="text-xs text-muted-foreground">Page {entry.page}</span>}
-                                                        {entry.title && <span className="text-xs text-muted-foreground truncate">{entry.title}</span>}
+                                            ) : (
+                                                <div className={`w-16 h-16 rounded-xl flex items-center justify-center text-lg font-bold ${posBadge.class}`}>{kw.currentPosition ? `#${kw.currentPosition}` : "—"}</div>
+                                            )}
+                                            {kw.status === "completed" && kw.currentPosition && (
+                                                <div className="text-center mt-1">
+                                                    <div className={`flex items-center justify-center gap-1 text-sm font-medium ${change.class}`}>
+                                                        {change.icon}
+                                                        {change.text}
                                                     </div>
+                                                    <p className="text-[10px] text-muted-foreground mt-0.5">change</p>
                                                 </div>
-                                                <div className="text-right shrink-0">
-                                                    <p className={`text-lg font-bold ${getPositionColor(entry.position)}`}>{entry.position || "N/R"}</p>
+                                            )}
+                                        </div>
+
+                                        <div className="flex-1 min-w-0">
+                                            <Link to={`/rank/${kw._id}`} className="text-base font-semibold text-foreground hover:text-primary transition-colors block truncate">
+                                                "{kw.keyword}"
+                                            </Link>
+                                            <div className="flex items-center gap-2 mt-1">
+                                                <Globe size={12} className="text-muted-foreground" />
+                                                <span className="text-sm text-muted-foreground truncate">{kw.domain}</span>
+                                                {kw.currentPage && <span className="text-xs text-muted-foreground bg-muted px-2 py-0.5 rounded-full">Page {kw.currentPage}</span>}
+                                            </div>
+                                            {kw.lastChecked && (
+                                                <div className="flex items-center gap-1 mt-1 text-xs text-muted-foreground">
+                                                    <Clock size={10} />
+                                                    Last checked: {new Date(kw.lastChecked).toLocaleString()}
+                                                </div>
+                                            )}
+                                        </div>
+
+                                        {/* Stats */}
+                                        {kw.status === "completed" && (
+                                            <div className="hidden md:flex items-center gap-5">
+                                                <div className="text-center">
+                                                    <p className="text-sm font-bold text-primary">{kw.bestPosition || "—"}</p>
+                                                    <p className="text-[10px] text-muted-foreground">Best</p>
+                                                </div>
+                                                <div className="text-center">
+                                                    <p className="text-sm font-bold text-accent">{kw.competitors?.length || 0}</p>
+                                                    <p className="text-[10px] text-muted-foreground">Competitors</p>
                                                 </div>
                                             </div>
-                                        ))}
+                                        )}
+
+                                        {/* Actions */}
+                                        <div className="flex items-center gap-1.5 shrink-0">
+                                            <Link to={`/rank/${kw._id}`} className="p-2 rounded-lg hover:bg-muted text-muted-foreground hover:text-primary transition-all" title="View Details">
+                                                <ExternalLink size={16} />
+                                            </Link>
+                                            <button onClick={() => handleRefresh(kw._id)} disabled={refreshing === kw._id || kw.status === "checking"} className="p-2 rounded-lg hover:bg-muted text-muted-foreground hover:text-primary transition-all disabled:opacity-30" title="Refresh Ranking">
+                                                <RefreshCw size={16} className={refreshing === kw._id ? "animate-spin" : ""} />
+                                            </button>
+                                            <button
+                                                onClick={() => handleToggle(kw._id)}
+                                                className={`p-2 rounded-lg hover:bg-muted transition-all ${kw.active ? "text-success hover:text-success" : "text-muted-foreground hover:text-foreground"}`}
+                                                title={kw.active ? "Pause Tracking" : "Resume Tracking"}
+                                            >
+                                                {kw.active ? <Eye size={16} /> : <EyeOff size={16} />}
+                                            </button>
+                                            <button onClick={() => handleDelete(kw._id)} disabled={deleting === kw._id} className="p-2 rounded-lg hover:bg-danger/10 text-muted-foreground hover:text-danger transition-all disabled:opacity-50" title="Delete">
+                                                {deleting === kw._id ? <Loader2 size={16} className="animate-spin" /> : <Trash2 size={16} />}
+                                            </button>
+                                        </div>
+                                    </div>
                                 </div>
-                            ) : (
-                                <div className="text-center py-12 text-muted-foreground">
-                                    <Calendar size={32} className="mx-auto mb-2 opacity-50" />
-                                    <p className="text-sm">No history data yet. Data will appear after the first rank check.</p>
-                                </div>
-                            )}
-                        </div>
-                    )}
-                </div>
+                            );
+                        })}
+                    </div>
+                )}
             </div>
+
+            {/* Add Modal */}
+            {showAddModal && (
+                <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+                    <div className="bg-background border border-border rounded-2xl p-6 w-full max-w-md">
+                        <div className="flex items-center justify-between mb-6">
+                            <h2 className="text-lg font-bold text-foreground">Track New Keyword</h2>
+                            <button
+                                onClick={() => {
+                                    setShowAddModal(false);
+                                    setAddError("");
+                                }}
+                                className="text-muted-foreground hover:text-foreground"
+                            >
+                                <X size={20} />
+                            </button>
+                        </div>
+
+                        {addError && (
+                            <div className="mb-4 px-4 py-3 rounded-xl severity-critical text-sm flex items-center gap-2">
+                                <AlertCircle size={16} className="shrink-0" />
+                                {addError}
+                            </div>
+                        )}
+
+                        <form onSubmit={handleAdd} className="space-y-4">
+                            <div>
+                                <label htmlFor="modal-keyword" className="block text-sm font-medium text-foreground mb-1.5">
+                                    Keyword
+                                </label>
+                                <div className="relative">
+                                    <Search size={18} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
+                                    <input
+                                        id="modal-keyword"
+                                        type="text"
+                                        value={newKeyword}
+                                        onChange={(e) => setNewKeyword(e.target.value)}
+                                        placeholder='e.g., "best seo tools"'
+                                        required
+                                        className="w-full pl-11 pr-4 py-3 rounded-xl bg-muted border border-border text-foreground placeholder-muted-foreground outline-none focus:border-primary/50 transition-colors text-sm"
+                                    />
+                                </div>
+                            </div>
+                            <div>
+                                <label htmlFor="modal-url" className="block text-sm font-medium text-foreground mb-1.5">
+                                    Website URL
+                                </label>
+                                <div className="relative">
+                                    <Globe size={18} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
+                                    <input
+                                        id="modal-url"
+                                        type="text"
+                                        value={newUrl}
+                                        onChange={(e) => setNewUrl(e.target.value)}
+                                        placeholder="e.g., example.com"
+                                        required
+                                        className="w-full pl-11 pr-4 py-3 rounded-xl bg-muted border border-border text-foreground placeholder-muted-foreground outline-none focus:border-primary/50 transition-colors text-sm"
+                                    />
+                                </div>
+                            </div>
+
+                            <div className="bg-primary/5 border border-primary/20 rounded-xl p-3 text-xs text-muted-foreground">
+                                <p>💡 We'll search Google for your keyword, find your website's position (up to page 5), and track it daily.</p>
+                            </div>
+
+                            <button type="submit" disabled={adding} className="w-full py-3 rounded-xl bg-primary font-semibold text-sm text-primary-foreground flex items-center justify-center gap-2 hover:opacity-90 transition-opacity disabled:opacity-50" style={{ color: "var(--background)" }}>
+                                {adding ? (
+                                    <Loader2 size={18} className="animate-spin" />
+                                ) : (
+                                    <>
+                                        <Target size={18} />
+                                        Start Tracking
+                                    </>
+                                )}
+                            </button>
+                        </form>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }

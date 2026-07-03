@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link,useNavigate, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { Mail, Lock, Loader2, ChartNoAxesColumnIcon, User2Icon } from "lucide-react";
 import { useApp } from "../context/AppContext";
 import toast from "react-hot-toast";
@@ -10,7 +10,7 @@ export default function Login({ state }: { state: string }) {
     const [email, setEmail] = useState("");
     const [password, setPassword] = useState("");
     const [loading, setLoading] = useState(false);
-    const {login, register} = useApp()
+    const { login, register } = useApp();
 
     const [searchParams] = useSearchParams();
     const navigate = useNavigate();
@@ -20,17 +20,17 @@ export default function Login({ state }: { state: string }) {
         setLoading(true);
 
         let result;
-        if(isLoginState){
+        if (isLoginState) {
             result = await login(email, password);
         } else {
             result = await register(name, email, password);
         }
 
-        if(result.success){
+        if (result.success) {
             const redirect = searchParams.get("redirect") || "/dashboard";
             navigate(redirect);
-        } else{
-            toast.error(result.message || "Login Failed");
+        } else {
+            toast.error(result.message || "Login failed");
         }
         setLoading(false);
     };
